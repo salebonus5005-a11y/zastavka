@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Часы и погода</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; color: #e8e8e8; overflow: hidden;
+    font-family: "Segoe UI", Roboto, Arial, sans-serif; cursor: none; }
+  #wrap { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    text-align: center; transition: left 3s ease, top 3s ease; white-space: nowrap; }
+  #time { font-size: 22vh; font-weight: 200; line-height: 1; letter-spacing: 0.02em; }
+  #sec { font-size: 7vh; color: #777; vertical-align: top; margin-left: 1vh; }
+  #date { font-size: 5vh; color: #aaa; margin-top: 1vh; }
+  #now { margin-top: 5vh; font-size: 6vh; display: flex; align-items: center; justify-content: center; gap: 3vh; }
+  #icon { font-size: 9vh; }
+  #temp { font-size: 9vh; font-weight: 300; }
+  #desc { font-size: 3.6vh; color: #bbb; text-align: left; line-height: 1.4; }
+  #hours { margin-top: 4vh; display: flex; justify-content: center; gap: 4vh; font-size: 3vh; color: #999; }
+  #hours div { min-width: 9vh; }
+  #hours b { display: block; font-size: 4.5vh; font-weight: 300; color: #ddd; margin: 0.6vh 0; }
+  #city { margin-top: 3vh; font-size: 2.4vh; color: #555; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div><span id="time">--:--</span><span id="sec">--</span></div>
+  <div id="date"></div>
+  <div id="now">
+    <span id="icon"></span>
+    <span id="temp"></span>
+    <span id="desc">Загружаю погоду…</span>
+  </div>
+  <div id="hours"></div>
+  <div id="city">Пермь</div>
+</div>
+<script>
+var LAT = 58.01, LON = 56.25;
+var MONTHS = ["января","февраля","марта","апреля","мая","июня","июля","августа","сентября","октября","ноября","декабря"];
+var DAYS = ["воскресенье","понедельник","вторник","среда","четверг","пятница","суббота"];
+
+function pad(n) { return (n < 10 ? "0" : "") + n; }
+
+function tick() {
+  var d = new Date();
+  document.getElementById("time").textContent = pad(d.getHours()) + ":" + pad(d.getMinutes());
+  document.getElementById("sec").textContent = pad(d.getSeconds());
+  document.getElementById("date").textContent =
+    DAYS[d.getDay()] + ", " + d.getDate() + " " + MONTHS[d.getMonth()];
+}
+
+function codeInfo(c, isDay) {
+  if (c === 0) return [isDay ? "☀️" : "🌙", "Ясно"];
+  if (c === 1) return [isDay ? "🌤️" : "🌙", "Малооблачно"];
+  if (c === 2) return ["⛅", "Переменная облачность"];
+  if (c === 3) return ["☁️", "Пасмурно"];
+  if (c === 45 || c === 48) return ["🌫️", "Туман"];
+  if (c >= 51 && c <= 57) return ["🌦️", "Морось"];
+  if (c >= 61 && c <= 67) return ["🌧️", "Дождь"];
+  if (c >= 71 && c <= 77) return ["🌨️", "Снег"];
+  if (c >= 80 && c <= 82) return ["🌧️", "Ливень"];
+  if (c === 85 || c === 86) return ["🌨️", "Снегопад"];
+  if (c >= 95) return ["⛈️", "Гроза"];
+  return ["", ""];
+}
+
+function sign(t) { t = Math.round(t); return (t > 0 ? "+" : "") + t + "°"; }
+
+function loadWeather() {
+  var url = "https://api.open-meteo.com/v1/forecast?latitude=" + LAT + "&longitude=" + LON +
+    "&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,is_day" +
+    "&hourly=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min" +
+    "&wind_speed_unit=ms&timezone=auto&forecast_days=2";
+  var x = new XMLHttpRequest();
+  x.open("GET", url);
+  x.onload = function () {
+    try {
+      var w = JSON.parse(x.responseText);
+      var c = w.current;
+      var info = codeInfo(c.weather_code, c.is_day);
+      document.getElementById("icon").textContent = info[0];
+      document.getElementById("temp").textContent = sign(c.temperature_2m);
+      document.getElementById("desc").innerHTML =
+        info[1] + "<br>Ощущается " + sign(c.apparent_temperature) +
+        " · ветер " + Math.round(c.wind_speed_10m) + " м/с<br>Днём " +
+        sign(w.daily.temperature_2m_min[0]) + " … " + sign(w.daily.temperature_2m_max[0]);
+
+      var now = new Date(), html = "", shown = 0;
+      for (var i = 0; i < w.hourly.time.length && shown < 5; i++) {
+        var t = new Date(w.hourly.time[i]);
+        if (t <= now || t.getHours() % 3 !== 0) continue;
+        var hi = codeInfo(w.hourly.weather_code[i], t.getHours() >= 7 && t.getHours() <= 19);
+        html += "<div>" + pad(t.getHours()) + ":00<b>" + sign(w.hourly.temperature_2m[i]) + "</b>" + hi[0] + "</div>";
+        shown++;
+      }
+      document.getElementById("hours").innerHTML = html;
+    } catch (e) {
+      document.getElementById("desc").textContent = "Погода недоступна";
+    }
+  };
+  x.onerror = function () { document.getElementById("desc").textContent = "Нет связи с сервисом погоды"; };
+  x.send();
+}
+
+// Медленно сдвигаем картинку, чтобы экран не «выгорал»
+function drift() {
+  var w = document.getElementById("wrap");
+  w.style.left = (40 + Math.random() * 20) + "%";
+  w.style.top = (40 + Math.random() * 20) + "%";
+}
+
+// Нажатие OK на пульте — во весь экран
+document.addEventListener("click", function () {
+  var el = document.documentElement;
+  if (el.requestFullscreen) el.requestFullscreen();
+  else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+});
+
+tick(); setInterval(tick, 1000);
+loadWeather(); setInterval(loadWeather, 15 * 60 * 1000);
+setInterval(drift, 60 * 1000);
+</script>
+</body>
+</html>
