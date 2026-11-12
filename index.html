@@ -66,40 +66,125 @@ function codeInfo(c, isDay) {
 
 function sign(t) { t = Math.round(t); return (t > 0 ? "+" : "") + t + "°"; }
 
-function loadWeather() {
-  var url = "https://api.open-meteo.com/v1/forecast?latitude=" + LAT + "&longitude=" + LON +
+// Загрузка JSON старым надёжным способом, с ограничением по времени
+function getJSON(url, ok, fail) {
+  var done = false;
+  var x = new XMLHttpRequest();
+  var timer = setTimeout(function () {
+    if (done) return; done = true;
+    try { x.abort(); } catch (e) {}
+    fail("нет ответа");
+  }, 15000);
+  x.onreadystatechange = function () {
+    if (x.readyState !== 4 || done) return;
+    done = true; clearTimeout(timer);
+    if (x.status !== 200) { fail("ошибка " + x.status); return; }
+    var data;
+    try { data = JSON.parse(x.responseText); } catch (e) { fail("плохой ответ"); return; }
+    ok(data);
+  };
+  try { x.open("GET", url, true); x.send(); }
+  catch (e) { done = true; clearTimeout(timer); fail("запрос не отправлен"); }
+}
+
+// Время "2026-11-12T18:00" → часы (без разбора даты браузером)
+function hourOf(s) { return parseInt(s.substr(11, 2), 10); }
+function dayOf(s) { return s.substr(0, 10); }
+function todayStr() {
+  var d = new Date();
+  return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+}
+
+function show(icon, temp, descHtml, hoursHtml) {
+  document.getElementById("icon").textContent = icon;
+  document.getElementById("temp").textContent = temp;
+  document.getElementById("desc").innerHTML = descHtml;
+  document.getElementById("hours").innerHTML = hoursHtml;
+}
+
+// Сервис 1: Open-Meteo
+var OM_URL = "https://api.open-meteo.com/v1/forecast?latitude=" + LAT + "&longitude=" + LON +
     "&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,is_day" +
     "&hourly=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min" +
     "&wind_speed_unit=ms&timezone=auto&forecast_days=2";
-  var x = new XMLHttpRequest();
-  x.open("GET", url);
-  x.onload = function () {
+// Сервис 3: копия погоды на нашем же сайте (её обновляет GitHub)
+var LOCAL_URL = "weather.json";
+
+function fromOpenMeteo(ok, fail, url) {
+  getJSON((url || OM_URL) + (url ? "?t=" + new Date().getTime() : ""), function (w) {
     try {
-      var w = JSON.parse(x.responseText);
       var c = w.current;
       var info = codeInfo(c.weather_code, c.is_day);
-      document.getElementById("icon").textContent = info[0];
-      document.getElementById("temp").textContent = sign(c.temperature_2m);
-      document.getElementById("desc").innerHTML =
-        info[1] + "<br>Ощущается " + sign(c.apparent_temperature) +
+      var desc = info[1] + "<br>Ощущается " + sign(c.apparent_temperature) +
         " · ветер " + Math.round(c.wind_speed_10m) + " м/с<br>Днём " +
         sign(w.daily.temperature_2m_min[0]) + " … " + sign(w.daily.temperature_2m_max[0]);
-
-      var now = new Date(), html = "", shown = 0;
+      var now = new Date(), today = todayStr(), html = "", shown = 0;
       for (var i = 0; i < w.hourly.time.length && shown < 5; i++) {
-        var t = new Date(w.hourly.time[i]);
-        if (t <= now || t.getHours() % 3 !== 0) continue;
-        var hi = codeInfo(w.hourly.weather_code[i], t.getHours() >= 7 && t.getHours() <= 19);
-        html += "<div>" + pad(t.getHours()) + ":00<b>" + sign(w.hourly.temperature_2m[i]) + "</b>" + hi[0] + "</div>";
+        var s = w.hourly.time[i], h = hourOf(s);
+        if (dayOf(s) < today || (dayOf(s) === today && h <= now.getHours()) || h % 3 !== 0) continue;
+        var hi = codeInfo(w.hourly.weather_code[i], h >= 7 && h <= 19);
+        html += "<div>" + pad(h) + ":00<b>" + sign(w.hourly.temperature_2m[i]) + "</b>" + hi[0] + "</div>";
         shown++;
       }
-      document.getElementById("hours").innerHTML = html;
-    } catch (e) {
-      document.getElementById("desc").textContent = "Погода недоступна";
-    }
-  };
-  x.onerror = function () { document.getElementById("desc").textContent = "Нет связи с сервисом погоды"; };
-  x.send();
+      show(info[0], sign(c.temperature_2m), desc, html);
+      ok();
+    } catch (e) { fail("не разобрал данные"); }
+  }, fail);
+}
+
+// Значки для кодов сервиса wttr.in
+function wwoIcon(code) {
+  code = parseInt(code, 10);
+  if (code === 113) return "☀️";
+  if (code === 116) return "⛅";
+  if (code === 119 || code === 122) return "☁️";
+  if (code === 143 || code === 248 || code === 260) return "🌫️";
+  if (code === 200 || code >= 386) return "⛈️";
+  if (code === 179 || code === 227 || code === 230 || (code >= 323 && code <= 338) || code === 368 || code === 371) return "🌨️";
+  return "🌧️";
+}
+
+// Сервис 2 (запасной): wttr.in
+function fromWttr(ok, fail) {
+  getJSON("https://wttr.in/Perm?format=j1&lang=ru", function (w) {
+    try {
+      var c = w.current_condition[0];
+      var text = (c.lang_ru && c.lang_ru[0]) ? c.lang_ru[0].value : "";
+      var day = w.weather[0];
+      var desc = text + "<br>Ощущается " + sign(+c.FeelsLikeC) +
+        " · ветер " + Math.round(c.windspeedKmph / 3.6) + " м/с<br>Днём " +
+        sign(+day.mintempC) + " … " + sign(+day.maxtempC);
+      var nowH = new Date().getHours(), html = "", shown = 0;
+      for (var d = 0; d < w.weather.length && shown < 5; d++) {
+        var hrs = w.weather[d].hourly;
+        for (var i = 0; i < hrs.length && shown < 5; i++) {
+          var h = parseInt(hrs[i].time, 10) / 100;
+          if (d === 0 && h <= nowH) continue;
+          html += "<div>" + pad(h) + ":00<b>" + sign(+hrs[i].tempC) + "</b>" + wwoIcon(hrs[i].weatherCode) + "</div>";
+          shown++;
+        }
+      }
+      show(wwoIcon(c.weatherCode), sign(+c.temp_C), desc, html);
+      ok();
+    } catch (e) { fail("не разобрал данные"); }
+  }, fail);
+}
+
+var retryTimer = null;
+function loadWeather() {
+  if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+  fromOpenMeteo(function () {}, function (why1) {
+    fromOpenMeteo(function () {}, function (why2) {
+      fromWttr(function () {}, function (why3) {
+        // Если погода уже была, оставляем её; иначе пишем причину
+        if (!document.getElementById("temp").textContent) {
+          document.getElementById("desc").innerHTML =
+            "Погода пока не загрузилась<br><small style='color:#666'>" + why1 + " / " + why2 + " / " + why3 + ", пробую ещё раз…</small>";
+        }
+        retryTimer = setTimeout(loadWeather, 60 * 1000);
+      });
+    }, LOCAL_URL);
+  });
 }
 
 // Медленно сдвигаем картинку, чтобы экран не «выгорал»
